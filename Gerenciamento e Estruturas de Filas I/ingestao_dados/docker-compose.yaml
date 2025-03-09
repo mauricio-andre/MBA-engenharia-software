@@ -1,0 +1,146 @@
+services:
+  # Serviço do PostgreSQL
+  postgres:
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    container_name: postgres
+    restart: always
+    ports:
+      - "5432:5432" # Expondo a porta padrão do PostgreSQL
+    environment:
+      - POSTGRES_DB=usuarios # Nome do banco de dados
+      - POSTGRES_USER=root # Usuário do banco
+      - POSTGRES_PASSWORD=root # Senha do banco
+      - POSTGRES_HOST_AUTH_METHOD=trust # Permite autenticação sem senha (apenas para desenvolvimento)
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1" # Permite comunicação com o host
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Persistência dos dados do banco
+    command:
+      > # Configuração para permitir replicação lógica, útil para streaming de dados
+      postgres -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10
+
+  # Serviço do Zookeeper (necessário para o Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181 # Porta padrão do Zookeeper
+
+  # Serviço do Kafka (mensageria)
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - zookeeper # Kafka depende do Zookeeper para funcionar
+    ports:
+      - "9092:9092" # Porta interna usada para comunicação entre brokers
+      - "9094:9094" # Porta externa usada para comunicação com clientes
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # Define fator de replicação mínimo (1 = sem redundância)
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 # Conexão com o Zookeeper
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL # Comunicação entre os brokers
+      KAFKA_LISTENERS: INTERNAL://:9092,OUTSIDE://:9094 # Define os listeners internos e externos
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,OUTSIDE://host.docker.internal:9094
+      # Define como o Kafka será acessado por serviços internos e externos
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,OUTSIDE:PLAINTEXT
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+  # Serviço do Control Center (monitoramento do Kafka)
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:6.0.1
+    hostname: control-center
+    depends_on:
+      - kafka
+    ports:
+      - "9021:9021" # Interface web para monitoramento do Kafka
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: "kafka:9092"
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_CONNECT_CLUSTER: http://kafka-connect:8083
+      PORT: 9021
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+  # Serviço Kafka Connect (para integração com bancos e outros sistemas)
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect-base:6.0.0
+    container_name: kafka-connect
+    depends_on:
+      - zookeeper
+      - kafka
+    ports:
+      - 8083:8083 # Porta para configurar conectores Kafka
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092" # Servidor Kafka
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: kafka-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_LOG4J_ROOT_LOGLEVEL: "INFO"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components,/data/connect-jars
+    volumes:
+      - data:/data # Volume para armazenar plugins e conectores
+    command:
+      - bash
+      - -c
+      - |
+        echo "Installing Connector"
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:1.2.2
+        # Conector Debezium para capturar mudanças no PostgreSQL
+        confluent-hub install --no-prompt confluentinc/kafka-connect-elasticsearch:10.0.1
+        # Conector para enviar dados do Kafka ao Elasticsearch
+        echo "Launching Kafka Connect worker"
+        /etc/confluent/docker/run &
+        sleep infinity
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+  # Serviço do Elasticsearch (armazenamento e busca avançada)
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.11.2
+    container_name: es01
+    environment:
+      - node.name=es01
+      - cluster.name=es-docker-cluster # Nome do cluster Elasticsearch
+      - cluster.initial_master_nodes=es01 # Define este nó como mestre inicial
+      - bootstrap.memory_lock=true # Evita swap de memória
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # Configuração de memória para Elasticsearch
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1 # Permite bloqueio de memória para melhor desempenho
+    volumes:
+      - es01:/usr/share/elasticsearch/data # Persistência dos dados do Elasticsearch
+    ports:
+      - 9200:9200 # API do Elasticsearch
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+  # Serviço do Kibana (interface visual para Elasticsearch)
+  kib01:
+    image: docker.elastic.co/kibana/kibana:7.11.2
+    container_name: kib01
+    ports:
+      - 5601:5601 # Porta do Kibana (painel de visualização)
+    environment:
+      ELASTICSEARCH_URL: http://es01:9200
+      ELASTICSEARCH_HOSTS: '["http://es01:9200"]' # Conexão com Elasticsearch
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+# Definição de volumes para persistência de dados
+volumes:
+  data: # Volume para armazenar conectores do Kafka
+  es01: # Volume para dados do Elasticsearch
+  postgres_data: # Volume para dados do PostgreSQL

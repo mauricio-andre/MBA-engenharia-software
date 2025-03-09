@@ -1,0 +1,98 @@
+services:
+  api:
+    container_name: api # Define o nome do contêiner como "api"
+    build: . # Constrói a imagem com base no Dockerfile no diretório atual
+    volumes:
+      - ./src:/code/app # Monta o diretório local "src" dentro do contêiner
+    ports:
+      - "8000:8000" # Expõe a API na porta 8000 do host
+    working_dir: /code # Define o diretório de trabalho dentro do contêiner
+    depends_on:
+      - celery # Aguarda o serviço Celery estar disponível antes de iniciar
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL} # Configuração do broker para o Celery (RabbitMQ ou Redis)
+      - CELERY_BACKEND_URL=${CELERY_BACKEND_URL} # Configuração do backend de resultados do Celery
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload # Inicia a API com Uvicorn
+    networks:
+      - jobs_distribuidos # Conecta a API à rede "jobs_distribuidos"
+
+  rabbitmq:
+    image: rabbitmq:3-management # Usa a versão com interface de gerenciamento do RabbitMQ
+    ports:
+      - "5672:5672" # Porta padrão do RabbitMQ para comunicação com clientes
+      - "15672:15672" # Porta da interface web de gerenciamento do RabbitMQ
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"] # Testa se o RabbitMQ está funcionando
+      interval: 10s # Verifica a cada 10 segundos
+      timeout: 5s # Tempo limite de 5 segundos para resposta
+      retries: 5 # Tenta 5 vezes antes de considerar que o serviço falhou
+    networks:
+      - jobs_distribuidos # Conecta o RabbitMQ à rede "jobs_distribuidos"
+
+  celery:
+    build: . # Constrói a imagem com base no Dockerfile no diretório atual
+    depends_on:
+      redis:
+        condition: service_healthy # Aguarda o Redis estar pronto
+      rabbitmq:
+        condition: service_healthy # Aguarda o RabbitMQ estar pronto
+    command:
+      celery -A app.celery.worker.celery worker -l info --concurrency=8 --prefetch-multiplier=8
+      # Inicia um worker Celery com 8 processos concorrentes e prefetch de 8 tarefas por processo
+    volumes:
+      - ./src:/code/app # Monta o diretório local "src" dentro do contêiner
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL} # Configuração do broker para o Celery
+      - CELERY_BACKEND_URL=${CELERY_BACKEND_URL} # Configuração do backend de resultados do Celery
+    networks:
+      - jobs_distribuidos # Conecta o Celery à rede "jobs_distribuidos"
+
+  redis:
+    restart: unless-stopped # Reinicia o contêiner caso pare inesperadamente, exceto se for parado manualmente
+    image: redis:7.0.5-alpine # Usa uma versão leve do Redis baseada em Alpine Linux
+    ports:
+      - "6379:6379" # Porta padrão do Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"] # Testa se o Redis está funcionando corretamente
+      interval: 10s # Verifica a cada 10 segundos
+      timeout: 5s # Tempo limite de 5 segundos para resposta
+      retries: 5 # Tenta 5 vezes antes de considerar que o serviço falhou
+    networks:
+      - jobs_distribuidos # Conecta o Redis à rede "jobs_distribuidos"
+
+  flower:
+    image: mher/flower # Usa a imagem oficial do Flower para monitoramento do Celery
+    ports:
+      - "5555:5555" # Porta padrão da interface web do Flower
+    depends_on:
+      - rabbitmq # Aguarda o RabbitMQ estar disponível antes de iniciar
+      - redis # Aguarda o Redis estar disponível antes de iniciar
+      - celery # Aguarda o Celery estar disponível antes de iniciar
+    environment:
+      - RABBITMQ_HOST=rabbitmq # Define o host do RabbitMQ
+      - RABBITMQ_PORT=5672 # Porta do RabbitMQ usada pelo Flower
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL} # Configuração do broker para o Celery
+    networks:
+      - jobs_distribuidos # Conecta o Flower à rede "jobs_distribuidos"
+
+  locust:
+    container_name: locust # Define o nome do contêiner como "locust"
+    build: . # Constrói a imagem com base no Dockerfile no diretório atual
+    volumes:
+      - ./src:/code/app # Monta o diretório local "src" dentro do contêiner
+    working_dir: /code # Define o diretório de trabalho dentro do contêiner
+    ports:
+      - "8089:8089" # Porta padrão da interface web do Locust
+    command:
+      "locust -f app/teste_carga/script.py --host http://api:8000"
+      # Executa testes de carga no endpoint da API
+    networks:
+      - jobs_distribuidos # Conecta o Locust à rede "jobs_distribuidos"
+
+# Define a rede compartilhada entre os serviços
+networks:
+  jobs_distribuidos:
+
+# Define volumes persistentes usados pelos serviços
+volumes:
+  redis_volume:
