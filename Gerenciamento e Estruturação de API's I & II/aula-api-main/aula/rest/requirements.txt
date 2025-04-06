@@ -1,0 +1,11 @@
+uvicorn
+fastapi
+pydantic==1.10.11
+python-multipart
+psycopg2-binary
+python-jose
+passlib
+sqlalchemy
+pydantic[email]
+strawberry-graphql[fastapi]
+slowapi

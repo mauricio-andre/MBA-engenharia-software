@@ -1,0 +1,46 @@
+services:
+  cliente:
+    container_name: cliente
+    build: .
+    volumes:
+      - ./cliente/app:/cliente/app # Monta o diretório local no contêiner
+    working_dir: /cliente/app
+    ports:
+      - "8000:8000" # Expõe a porta do microsserviço
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload # Inicia a aplicação com Uvicorn
+    networks:
+      - grpc
+
+  servidor:
+    container_name: servidor
+    build: .
+    volumes:
+      - ./servidor/app:/servidor/app # Monta o diretório local no contêiner
+    working_dir: /servidor/app
+    ports:
+      - "50051:50051" # Expõe a porta do microsserviço
+    environment:
+      - REDIS_URL=${REDIS_URL}
+    command: python main.py
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - grpc
+
+  redis:
+    container_name: redis
+    restart: unless-stopped # Reinicia o contêiner caso pare inesperadamente, exceto se for parado manualmente
+    image: redis:7.0.5-alpine # Usa uma versão leve do Redis baseada em Alpine Linux
+    ports:
+      - "6379:6379" # Porta padrão do Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"] # Testa se o Redis está funcionando corretamente
+      interval: 10s # Verifica a cada 10 segundos
+      timeout: 5s # Tempo limite de 5 segundos para resposta
+      retries: 5 # Tenta 5 vezes antes de considerar que o serviço falhou
+    networks:
+      - grpc # Conecta o Redis à rede "grpc"
+
+networks:
+  grpc:

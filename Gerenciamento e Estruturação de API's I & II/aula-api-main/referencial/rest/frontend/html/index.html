@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste de CORS</title>
+</head>
+<body>
+    <h2>Teste de CORS</h2>
+    <input type="text" id="url" placeholder="Digite a URL" style="width: 300px;">
+    <button onclick="fazerRequisicao()">Testar</button>
+    <pre id="resultado"></pre>
+
+    <script>
+        function fazerRequisicao() {
+            const url = document.getElementById("url").value;
+            const resultado = document.getElementById("resultado");
+            resultado.textContent = "Carregando...";
+
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Erro HTTP: ${response.status} - ${response.statusText}`);
+                    }
+                    return response.text();
+                })
+                .then(data => {
+                    resultado.textContent = "Resposta:\n" + data;
+                })
+                .catch(error => {
+                    resultado.textContent = "Erro ao fazer a requisição:\n" + error.message;
+                });
+        }
+    </script>
+</body>
+</html>
